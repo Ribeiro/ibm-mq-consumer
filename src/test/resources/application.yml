@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: ibm-mq-consumer
+  
+  datasource:
+    url: jdbc:h2:mem:testdb
+    username: sa
+    password: 
+    driver-class-name: org.h2.Driver
+  
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+  
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    time-zone: America/Sao_Paulo
+
+ibm:
+  mq:
+    queueManager: QM1
+    channel: DEV.ADMIN.SVRCONN
+    connName: localhost(1414)
+    user: admin
+    password: passw0rd
+    queue:
+      audit: "QUEUE.AUDIT"
+      audit.dlq: "QUEUE.AUDIT.DLQ"
+
+logging:
+  level:
+    com.example: DEBUG
+    org.springframework.jms: DEBUG
