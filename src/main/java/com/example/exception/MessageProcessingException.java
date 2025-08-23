@@ -6,7 +6,13 @@ import java.util.Map;
 public class MessageProcessingException extends RuntimeException {
   private static final long serialVersionUID = 1L;
 
-  public enum Reason { SERIALIZATION, DATABASE, VALIDATION, UNKNOWN }
+  public enum Reason { 
+    SERIALIZATION, 
+    DATABASE, 
+    VALIDATION, 
+    DLQ_FAILURE,
+    UNKNOWN 
+}
 
   private final String messageId;
   private final transient Map<String, Object> headers;

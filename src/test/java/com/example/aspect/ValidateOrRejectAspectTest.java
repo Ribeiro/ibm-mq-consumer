@@ -1,7 +1,7 @@
 package com.example.aspect;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -9,9 +9,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import java.time.OffsetDateTime;
 import java.util.HashMap;
@@ -25,12 +23,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.core.env.Environment;
 import org.springframework.jms.core.JmsTemplate;
 import com.example.annotation.ValidateOrReject;
+import com.example.exception.MessageProcessingException;
 import com.example.model.AuditEvent;
 import com.example.model.DlqMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.core.env.Environment;
+import jakarta.jms.Session;
 
 
 @ExtendWith(MockitoExtension.class)
@@ -74,7 +74,7 @@ class ValidateOrRejectAspectTest {
         args = new Object[] { validEvent, headers, mock(jakarta.jms.Session.class) };
 
         lenient().when(env.resolvePlaceholders(anyString()))
-            .thenAnswer(inv -> inv.getArgument(0));
+                .thenAnswer(inv -> inv.getArgument(0));
     }
 
     @Test
@@ -150,24 +150,30 @@ class ValidateOrRejectAspectTest {
     }
 
     @Test
-    @DisplayName("Should handle error when sending to DLQ")
-    void shouldHandleErrorWhenSendingToDlq() throws Throwable {
-        args[0] = null;
-        when(joinPoint.getArgs()).thenReturn(args);
-        when(validateOrReject.expectedType()).thenAnswer(inv -> (Class<?>) AuditEvent.class);
-        when(validateOrReject.dlqDestination()).thenReturn("test.dlq");
-        when(objectMapper.writeValueAsString(null)).thenReturn("null");
+    @DisplayName("Should throw MessageProcessingException when DLQ send fails")
+    void shouldThrowExceptionWhenSendingToDlqFails() throws Throwable {
+        AuditEvent invalidEvent = new AuditEvent();
+        Session session = mock(Session.class);
+
+        Object[] mockArgs = { invalidEvent, headers, session };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(inv -> (Class<?>) String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
 
         doThrow(new RuntimeException("JMS Error"))
-                .when(jmsTemplate)
-                .convertAndSend(eq("test.dlq"), any(Object.class));
+                .when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
 
-        assertThatCode(() -> aspect.interceptJmsListener(joinPoint, validateOrReject))
-                .doesNotThrowAnyException();
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
 
-        verify(jmsTemplate, times(1))
-                .convertAndSend(eq("test.dlq"), any(Object.class));
-        verifyNoMoreInteractions(jmsTemplate);
+        assertThatThrownBy(() -> {
+            aspect.interceptJmsListener(joinPoint, mockAnnotation);
+        })
+                .isInstanceOf(MessageProcessingException.class)
+                .hasMessageContaining("Failed to send message to DLQ");
+
+        verify(jmsTemplate).convertAndSend(eq("test.dlq"), any(DlqMessage.class));
     }
 
     @Test

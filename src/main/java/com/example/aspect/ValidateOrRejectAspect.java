@@ -10,13 +10,14 @@ import org.springframework.jms.core.JmsTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import com.example.annotation.ValidateOrReject;
+import com.example.exception.MessageProcessingException;
+import com.example.model.AuditEvent;
 import com.example.model.DlqMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.jms.Message;
 import jakarta.jms.Session;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-
 
 @Aspect
 @Component
@@ -29,7 +30,8 @@ public class ValidateOrRejectAspect {
     private final Environment env;
 
     @Around("@annotation(validateOrReject)")
-    public Object interceptJmsListener(ProceedingJoinPoint joinPoint, ValidateOrReject validateOrReject) throws Throwable {
+    public Object interceptJmsListener(ProceedingJoinPoint joinPoint, ValidateOrReject validateOrReject)
+            throws Throwable {
         Object[] args = joinPoint.getArgs();
 
         Object payload = null;
@@ -80,25 +82,46 @@ public class ValidateOrRejectAspect {
         }
         if (!expectedType.isInstance(payload)) {
             throw new IllegalArgumentException(
-                String.format("Payload must be of type %s, but received %s",
-                    expectedType.getSimpleName(), payload.getClass().getSimpleName()));
+                    String.format("Payload must be of type %s, but received %s",
+                            expectedType.getSimpleName(), payload.getClass().getSimpleName()));
         }
     }
 
-    private void sendToDlq(Object payload, Map<String, Object> headers, String dlqDestination, Exception originalError) {
+    private void sendToDlq(Object payload, Map<String, Object> headers, String dlqDestination,
+            Exception originalError) {
         try {
             DlqMessage dlqMessage = DlqMessage.builder()
-                .originalPayload(objectMapper.writeValueAsString(payload))
-                .errorMessage(originalError.getMessage())
-                .errorType(originalError.getClass().getSimpleName())
-                .timestamp(OffsetDateTime.now())
-                .originalHeaders(headers)
-                .build();
+                    .originalPayload(objectMapper.writeValueAsString(payload))
+                    .errorMessage(originalError.getMessage())
+                    .errorType(originalError.getClass().getSimpleName())
+                    .timestamp(OffsetDateTime.now())
+                    .originalHeaders(headers)
+                    .build();
 
             jmsTemplate.convertAndSend(dlqDestination, dlqMessage);
             log.info("Message sent to DLQ: {}", dlqDestination);
+
         } catch (Exception e) {
-            log.error("Failed to send message to DLQ: {}", dlqDestination, e);
+            String messageId = extractMessageId(payload, headers);
+
+            log.error("CRITICAL: Failed to send message {} to DLQ: {}. Re-throwing to prevent message loss!",
+                    messageId, dlqDestination, e);
+
+            throw new MessageProcessingException(
+                    "Failed to send message to DLQ: " + dlqDestination,
+                    messageId,
+                    headers,
+                    MessageProcessingException.Reason.DLQ_FAILURE,
+                    e);
         }
+    }
+
+    private String extractMessageId(Object payload, Map<String, Object> headers) {
+        if (payload instanceof AuditEvent auditEvent) {
+            return auditEvent.getMessageId();
+        }
+
+        Object jmsMessageId = headers != null ? headers.get("JMSMessageID") : null;
+        return jmsMessageId != null ? jmsMessageId.toString() : "unknown";
     }
 }
