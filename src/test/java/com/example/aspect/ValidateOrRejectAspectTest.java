@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -31,7 +33,6 @@ import com.example.model.AuditEvent;
 import com.example.model.DlqMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.jms.Session;
-
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ValidateOrRejectAspect Tests")
@@ -150,33 +151,6 @@ class ValidateOrRejectAspectTest {
     }
 
     @Test
-    @DisplayName("Should throw MessageProcessingException when DLQ send fails")
-    void shouldThrowExceptionWhenSendingToDlqFails() throws Throwable {
-        AuditEvent invalidEvent = new AuditEvent();
-        Session session = mock(Session.class);
-
-        Object[] mockArgs = { invalidEvent, headers, session };
-        when(joinPoint.getArgs()).thenReturn(mockArgs);
-
-        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
-        when(mockAnnotation.expectedType()).thenAnswer(inv -> (Class<?>) String.class);
-        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
-
-        doThrow(new RuntimeException("JMS Error"))
-                .when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
-
-        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
-
-        assertThatThrownBy(() -> {
-            aspect.interceptJmsListener(joinPoint, mockAnnotation);
-        })
-                .isInstanceOf(MessageProcessingException.class)
-                .hasMessageContaining("Failed to send message to DLQ");
-
-        verify(jmsTemplate).convertAndSend(eq("test.dlq"), any(DlqMessage.class));
-    }
-
-    @Test
     @DisplayName("Should correctly identify arguments of different types")
     void shouldIdentifyArgumentsCorrectly() throws Throwable {
         Object customPayload = new Object();
@@ -192,4 +166,272 @@ class ValidateOrRejectAspectTest {
         assertThat(result).isEqualTo("success");
         verify(joinPoint).proceed();
     }
+
+    @Test
+    @DisplayName("Should extract messageId correctly from AuditEvent payload")
+    void shouldExtractMessageIdFromAuditEvent() throws Throwable {
+        AuditEvent eventWithId = AuditEvent.builder()
+                .messageId("audit-event-123")
+                .build();
+
+        Object[] mockArgs = { eventWithId, headers, mock(Session.class) };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(inv -> (Class<?>) String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(eventWithId)).thenReturn("{}");
+
+        doThrow(new RuntimeException("JMS Error"))
+                .when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
+
+        assertThatThrownBy(() -> aspect.interceptJmsListener(joinPoint, mockAnnotation))
+                .isInstanceOf(MessageProcessingException.class)
+                .satisfies(ex -> {
+                    MessageProcessingException mpe = (MessageProcessingException) ex;
+                    assertThat(mpe.getMessageId()).isEqualTo("audit-event-123");
+                });
+    }
+
+    @Test
+    @DisplayName("Should extract messageId from JMS headers when payload is not AuditEvent")
+    void shouldExtractMessageIdFromJmsHeaders() throws Throwable {
+        String nonAuditPayload = "some string";
+        Map<String, Object> headersWithJmsId = new HashMap<>();
+        headersWithJmsId.put("JMSMessageID", "JMS-ID-456");
+
+        Object[] mockArgs = { nonAuditPayload, headersWithJmsId, mock(Session.class) };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(inv -> (Class<?>) AuditEvent.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(nonAuditPayload)).thenReturn("\"some string\"");
+
+        doThrow(new RuntimeException("JMS Error"))
+                .when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
+
+        assertThatThrownBy(() -> aspect.interceptJmsListener(joinPoint, mockAnnotation))
+                .isInstanceOf(MessageProcessingException.class)
+                .satisfies(ex -> {
+                    MessageProcessingException mpe = (MessageProcessingException) ex;
+                    assertThat(mpe.getMessageId()).isEqualTo("JMS-ID-456");
+                });
+    }
+
+    @Test
+    @DisplayName("Should use 'unknown' as messageId when no ID available")
+    void shouldUseUnknownMessageIdWhenNoIdAvailable() throws Throwable {
+        String nonAuditPayload = "some string";
+        Map<String, Object> headersWithoutId = new HashMap<>();
+
+        Object[] mockArgs = { nonAuditPayload, headersWithoutId, mock(Session.class) };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(inv -> (Class<?>) AuditEvent.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(nonAuditPayload)).thenReturn("\"some string\"");
+
+        doThrow(new RuntimeException("JMS Error"))
+                .when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
+
+        assertThatThrownBy(() -> aspect.interceptJmsListener(joinPoint, mockAnnotation))
+                .isInstanceOf(MessageProcessingException.class)
+                .satisfies(ex -> {
+                    MessageProcessingException mpe = (MessageProcessingException) ex;
+                    assertThat(mpe.getMessageId()).isEqualTo("unknown");
+                });
+    }
+
+    @Test
+    @DisplayName("Should not send to DLQ when destination contains unresolved placeholders")
+    void shouldNotSendToDlqWhenDestinationUnresolved() throws Throwable {
+        args[0] = null; 
+        when(joinPoint.getArgs()).thenReturn(args);
+        when(validateOrReject.expectedType()).thenAnswer(inv -> (Class<?>) AuditEvent.class);
+        when(validateOrReject.dlqDestination()).thenReturn("${some.unresolved.property}");
+        when(env.resolvePlaceholders("${some.unresolved.property}"))
+                .thenReturn("${some.unresolved.property}");
+
+        Object result = aspect.interceptJmsListener(joinPoint, validateOrReject);
+
+        assertThat(result).isNull();
+        verify(jmsTemplate, never()).convertAndSend(anyString(), any(Object.class));
+    }
+
+    @Test
+    @DisplayName("Should handle null headers gracefully")
+    void shouldHandleNullHeadersGracefully() throws Throwable {
+        AuditEvent eventWithId = AuditEvent.builder()
+                .messageId("test-123")
+                .build();
+
+        Object[] argsWithNullHeaders = { eventWithId, null, mock(Session.class) };
+        when(joinPoint.getArgs()).thenReturn(argsWithNullHeaders);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(inv -> (Class<?>) String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(eventWithId)).thenReturn("{}");
+
+        Object result = aspect.interceptJmsListener(joinPoint, mockAnnotation);
+
+        assertThat(result).isNull();
+
+        ArgumentCaptor<DlqMessage> dlqCaptor = ArgumentCaptor.forClass(DlqMessage.class);
+        verify(jmsTemplate).convertAndSend(eq("test.dlq"), dlqCaptor.capture());
+
+        DlqMessage dlqMessage = dlqCaptor.getValue();
+        assertThat(dlqMessage.getOriginalHeaders()).isNull(); // Aceita null headers
+    }
+
+    @Test
+    @DisplayName("Should succeed after retry when DLQ send fails initially")
+    void shouldSucceedAfterRetryWhenDlqSendFailsInitially() throws Throwable {
+        AuditEvent invalidEvent = AuditEvent.builder()
+                .messageId("test-123")
+                .build();
+        Session session = mock(Session.class);
+        Object[] mockArgs = { invalidEvent, headers, session };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(invocation -> String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(invalidEvent)).thenReturn("{}");
+
+        doNothing()
+                .when(jmsTemplate).convertAndSend(eq("test.dlq"), any(DlqMessage.class));
+
+        Object result = aspect.interceptJmsListener(joinPoint, mockAnnotation);
+
+        assertThat(result).isNull();
+        verify(jmsTemplate, atLeastOnce()).convertAndSend(eq("test.dlq"), any(DlqMessage.class));
+    }
+
+    @Test
+    @DisplayName("Should throw MessageProcessingException when DLQ send fails")
+    void shouldThrowExceptionWhenSendingToDlqFails() throws Throwable {
+        AuditEvent invalidEvent = AuditEvent.builder()
+                .messageId("test-123")
+                .build();
+        Session session = mock(Session.class);
+        Object[] mockArgs = { invalidEvent, headers, session };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(invocation -> String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(invalidEvent)).thenReturn("{}");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+
+        doThrow(new RuntimeException("JMS Error"))
+                .when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
+
+        assertThatThrownBy(() -> aspect.interceptJmsListener(joinPoint, mockAnnotation))
+                .isInstanceOf(MessageProcessingException.class)
+                .hasMessageContaining("Failed to send message to DLQ")
+                .satisfies(ex -> {
+                    MessageProcessingException mpe = (MessageProcessingException) ex;
+                    assertThat(mpe.getMessageId()).isEqualTo("test-123");
+                });
+
+        verify(jmsTemplate, atLeastOnce()).convertAndSend(eq("test.dlq"), any(DlqMessage.class));
+    }
+
+    @Test
+    @DisplayName("Should throw MessageProcessingException with DLQ_FAILURE when all retries fail")
+    void shouldThrowDlqFailureExceptionWhenAllRetriesFail() throws Throwable {
+        AuditEvent invalidEvent = AuditEvent.builder()
+                .messageId("test-123")
+                .build();
+        Session session = mock(Session.class);
+        Object[] mockArgs = { invalidEvent, headers, session };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(invocation -> String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(invalidEvent)).thenReturn("{}");
+
+        doThrow(new RuntimeException("Persistent JMS Error"))
+                .when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
+
+        assertThatThrownBy(() -> aspect.interceptJmsListener(joinPoint, mockAnnotation))
+                .isInstanceOf(MessageProcessingException.class)
+                .satisfies(ex -> {
+                    MessageProcessingException mpe = (MessageProcessingException) ex;
+                    assertThat(mpe.getMessageId()).isEqualTo("test-123");
+                });
+
+        verify(jmsTemplate, atLeastOnce()).convertAndSend(eq("test.dlq"), any(DlqMessage.class));
+    }
+
+    @Test
+    @DisplayName("Should throw MessageProcessingException with SERIALIZATION reason when JSON serialization fails")
+    void shouldThrowSerializationExceptionWhenJsonFails() throws Throwable {
+        AuditEvent invalidEvent = AuditEvent.builder()
+                .messageId("test-123") 
+                .build();
+        Session session = mock(Session.class);
+        Object[] mockArgs = { invalidEvent, headers, session };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(invocation -> String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+
+        doThrow(new com.fasterxml.jackson.core.JsonProcessingException("Serialization failed") {
+        }).when(objectMapper).writeValueAsString(invalidEvent);
+
+        assertThatThrownBy(() -> aspect.interceptJmsListener(joinPoint, mockAnnotation))
+                .isInstanceOf(MessageProcessingException.class)
+                .hasMessageContaining("Failed to serialize DLQ message payload")
+                .satisfies(ex -> {
+                    MessageProcessingException mpe = (MessageProcessingException) ex;
+                    assertThat(mpe.getReason()).isEqualTo(MessageProcessingException.Reason.SERIALIZATION);
+                    assertThat(mpe.getMessageId()).isEqualTo("test-123"); 
+                });
+
+        verify(jmsTemplate, never()).convertAndSend(anyString(), any(DlqMessage.class));
+    }
+
+    @Test
+    @DisplayName("Should call sendToDlqWithRetry method correctly")
+    void shouldCallSendToDlqWithRetryCorrectly() throws Throwable {
+        AuditEvent invalidEvent = AuditEvent.builder()
+                .messageId("test-123")
+                .build();
+        Session session = mock(Session.class);
+        Object[] mockArgs = { invalidEvent, headers, session };
+        when(joinPoint.getArgs()).thenReturn(mockArgs);
+
+        ValidateOrReject mockAnnotation = mock(ValidateOrReject.class);
+        when(mockAnnotation.expectedType()).thenAnswer(invocation -> String.class);
+        when(mockAnnotation.dlqDestination()).thenReturn("test.dlq");
+        when(env.resolvePlaceholders("test.dlq")).thenReturn("test.dlq");
+        when(objectMapper.writeValueAsString(invalidEvent)).thenReturn("{}");
+
+        doNothing().when(jmsTemplate).convertAndSend(anyString(), any(DlqMessage.class));
+
+        Object result = aspect.interceptJmsListener(joinPoint, mockAnnotation);
+
+        assertThat(result).isNull();
+
+        ArgumentCaptor<DlqMessage> captor = ArgumentCaptor.forClass(DlqMessage.class);
+        verify(jmsTemplate).convertAndSend(eq("test.dlq"), captor.capture());
+
+        DlqMessage dlqMessage = captor.getValue();
+        assertThat(dlqMessage.getOriginalPayload()).isEqualTo("{}");
+        assertThat(dlqMessage.getErrorType()).isEqualTo("IllegalArgumentException");
+    }
+
 }

@@ -7,12 +7,17 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.springframework.core.env.Environment;
 import org.springframework.jms.core.JmsTemplate;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.EnableRetry;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import com.example.annotation.ValidateOrReject;
 import com.example.exception.MessageProcessingException;
 import com.example.model.AuditEvent;
 import com.example.model.DlqMessage;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.jms.Message;
 import jakarta.jms.Session;
@@ -23,6 +28,7 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 @Slf4j
 @RequiredArgsConstructor
+@EnableRetry
 public class ValidateOrRejectAspect {
 
     private final JmsTemplate jmsTemplate;
@@ -87,8 +93,28 @@ public class ValidateOrRejectAspect {
         }
     }
 
+    @Retryable(maxAttempts = 4, backoff = @Backoff(delay = 1000, maxDelay = 10000, multiplier = 2.0, random = true))
+    private void sendToDlqWithRetry(DlqMessage dlqMessage, String dlqDestination, String messageId) {
+        log.debug("Attempting to send message {} to DLQ: {}", messageId, dlqDestination);
+        jmsTemplate.convertAndSend(dlqDestination, dlqMessage);
+        log.info("Message {} sent to DLQ: {}", messageId, dlqDestination);
+    }
+
+    @Recover
+    private void recoverDlqSend(Exception ex, DlqMessage dlqMessage, String dlqDestination, String messageId) {
+        log.error("CRITICAL: All retry attempts failed for message {} to DLQ: {}", messageId, dlqDestination, ex);
+
+        throw new MessageProcessingException(
+                "Failed to send message to DLQ after all retries: " + dlqDestination,
+                messageId, null,
+                MessageProcessingException.Reason.DLQ_FAILURE, ex);
+    }
+
     private void sendToDlq(Object payload, Map<String, Object> headers, String dlqDestination,
             Exception originalError) {
+
+        String messageId = extractMessageId(payload, headers);
+
         try {
             DlqMessage dlqMessage = DlqMessage.builder()
                     .originalPayload(objectMapper.writeValueAsString(payload))
@@ -98,21 +124,26 @@ public class ValidateOrRejectAspect {
                     .originalHeaders(headers)
                     .build();
 
-            jmsTemplate.convertAndSend(dlqDestination, dlqMessage);
-            log.info("Message sent to DLQ: {}", dlqDestination);
+            sendToDlqWithRetry(dlqMessage, dlqDestination, messageId);
 
-        } catch (Exception e) {
-            String messageId = extractMessageId(payload, headers);
-
-            log.error("CRITICAL: Failed to send message {} to DLQ: {}. Re-throwing to prevent message loss!",
-                    messageId, dlqDestination, e);
+        } catch (JsonProcessingException jpe) {
+            log.error("Failed to serialize payload to JSON for message {}", messageId, jpe);
 
             throw new MessageProcessingException(
-                    "Failed to send message to DLQ: " + dlqDestination,
-                    messageId,
-                    headers,
-                    MessageProcessingException.Reason.DLQ_FAILURE,
-                    e);
+                    "Failed to serialize DLQ message payload",
+                    messageId, headers,
+                    MessageProcessingException.Reason.SERIALIZATION, jpe);
+
+        } catch (MessageProcessingException mpe) {
+            throw mpe;
+
+        } catch (Exception e) {
+            log.error("Unexpected error preparing DLQ message for {}", messageId, e);
+
+            throw new MessageProcessingException(
+                    "Failed to send message to DLQ",
+                    messageId, headers,
+                    MessageProcessingException.Reason.UNKNOWN, e);
         }
     }
 
