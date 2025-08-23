@@ -10,10 +10,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.example.annotation.ValidateOrReject;
 import com.example.entity.AuditLog;
+import com.example.exception.MessageProcessingException;
 import com.example.model.AuditEvent;
 import com.example.repository.AuditLogRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import jakarta.jms.Message;
 import jakarta.jms.Session;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,17 +29,17 @@ public class MqAuditConsumerService {
     private final AuditLogRepository repository;
     private final ObjectMapper objectMapper;
 
+    @Transactional(transactionManager = "transactionManager")
     @JmsListener(destination = "${ibm.mq.queue.audit}", containerFactory = "defaultJmsListenerContainerFactory")
-    @Transactional
     @ValidateOrReject(dlqDestination = "${ibm.mq.queue.audit.dlq}", expectedType = AuditEvent.class)
-    public void onMessage(
-            @Payload AuditEvent event,
-            @Headers Map<String, Object> headers,
-            Session session) {
+    public void onMessage(@Payload AuditEvent event,
+                          @Headers Map<String, Object> headers,
+                          Message jmsMessage,
+                          Session session) {
         try {
             String messageId = event.getMessageId();
             if (messageId != null && repository.existsByMessageId(messageId)) {
-                log.info("Mensagem duplicada ignorada: {}", messageId);
+                log.info("Duplicate message ignored: {}", messageId);
                 return;
             }
 
@@ -52,13 +55,13 @@ public class MqAuditConsumerService {
             repository.saveAndFlush(logRow);
 
             Object deliveryCount = headers.get("JMSXDeliveryCount");
-            log.debug("Consumido com sucesso. MessageId={}, JMSXDeliveryCount={}", messageId, deliveryCount);
+            log.debug("Successfully consumed. MessageId={}, JMSXDeliveryCount={}", messageId, deliveryCount);
 
         } catch (DataIntegrityViolationException dup) {
-            log.warn("Violação de unicidade (provável duplicata). Ignorando.", dup);
+            log.warn("Uniqueness violation (likely duplicate). Ignoring.", dup);
         } catch (Exception e) {
-            log.error("Falha ao processar mensagem. Forçando redelivery.", e);
-            throw asRuntimeException(e);
+            log.error("Failed to process message. Forcing redelivery.", e);
+            throw wrap(e, event, headers);
         }
     }
 
@@ -66,12 +69,19 @@ public class MqAuditConsumerService {
         try {
             return objectMapper.writeValueAsString(event);
         } catch (JsonProcessingException e) {
-            log.error("Erro ao serializar AuditEvent para JSON", e);
+            log.error("Error serializing AuditEvent to JSON", e);
             return "{}";
         }
     }
 
-    private RuntimeException asRuntimeException(Exception e) {
-        return e instanceof RuntimeException runtimeException ? runtimeException : new RuntimeException(e);
+    private RuntimeException wrap(Exception e, AuditEvent event, Map<String, Object> headers) {
+        if (e instanceof RuntimeException re)
+            return re;
+        return new MessageProcessingException(
+                "Failed to process AuditEvent",
+                event != null ? event.getMessageId() : null,
+                headers,
+                MessageProcessingException.Reason.UNKNOWN,
+                e);
     }
 }

@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -29,6 +30,7 @@ import com.example.annotation.ValidateOrReject;
 import com.example.model.AuditEvent;
 import com.example.model.DlqMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.core.env.Environment;
 
 
 @ExtendWith(MockitoExtension.class)
@@ -50,6 +52,9 @@ class ValidateOrRejectAspectTest {
     @InjectMocks
     private ValidateOrRejectAspect aspect;
 
+    @Mock
+    private Environment env;
+
     private AuditEvent validEvent;
     private Map<String, Object> headers;
     private Object[] args;
@@ -67,10 +72,13 @@ class ValidateOrRejectAspectTest {
         headers.put("JMSXDeliveryCount", 1);
 
         args = new Object[] { validEvent, headers, mock(jakarta.jms.Session.class) };
+
+        lenient().when(env.resolvePlaceholders(anyString()))
+            .thenAnswer(inv -> inv.getArgument(0));
     }
 
     @Test
-    @DisplayName("Deve proceder normalmente quando validação passa")
+    @DisplayName("Should proceed normally when validation passes")
     void shouldProceedWhenValidationPasses() throws Throwable {
         when(joinPoint.getArgs()).thenReturn(args);
         when(validateOrReject.expectedType()).thenAnswer(inv -> (Class<?>) AuditEvent.class);
@@ -84,7 +92,7 @@ class ValidateOrRejectAspectTest {
     }
 
     @Test
-    @DisplayName("Deve enviar para DLQ quando payload é nulo")
+    @DisplayName("Should send to DLQ when payload is null")
     void shouldSendToDlqWhenPayloadIsNull() throws Throwable {
         args[0] = null;
         when(joinPoint.getArgs()).thenReturn(args);
@@ -101,12 +109,12 @@ class ValidateOrRejectAspectTest {
         verify(jmsTemplate).convertAndSend(eq("test.dlq"), dlqCaptor.capture());
 
         DlqMessage dlqMessage = dlqCaptor.getValue();
-        assertThat(dlqMessage.getErrorMessage()).contains("Payload não pode ser nulo");
+        assertThat(dlqMessage.getErrorMessage()).contains("Payload must not be null");
         assertThat(dlqMessage.getErrorType()).isEqualTo("IllegalArgumentException");
     }
 
     @Test
-    @DisplayName("Deve enviar para DLQ quando tipo do payload está incorreto")
+    @DisplayName("Should send to DLQ when payload type is incorrect")
     void shouldSendToDlqWhenPayloadTypeIsIncorrect() throws Throwable {
         args[0] = "string-payload";
         when(joinPoint.getArgs()).thenReturn(args);
@@ -123,12 +131,12 @@ class ValidateOrRejectAspectTest {
         verify(jmsTemplate).convertAndSend(eq("test.dlq"), dlqCaptor.capture());
 
         DlqMessage dlqMessage = dlqCaptor.getValue();
-        assertThat(dlqMessage.getErrorMessage()).contains("Payload deve ser do tipo AuditEvent");
+        assertThat(dlqMessage.getErrorMessage()).contains("Payload must be of type AuditEvent");
         assertThat(dlqMessage.getOriginalHeaders()).isEqualTo(headers);
     }
 
     @Test
-    @DisplayName("Deve não enviar para DLQ quando dlqDestination está vazio")
+    @DisplayName("Should not send to DLQ when dlqDestination is empty")
     void shouldNotSendToDlqWhenDestinationIsEmpty() throws Throwable {
         args[0] = null;
         when(joinPoint.getArgs()).thenReturn(args);
@@ -142,7 +150,7 @@ class ValidateOrRejectAspectTest {
     }
 
     @Test
-    @DisplayName("Deve lidar com erro ao enviar para DLQ")
+    @DisplayName("Should handle error when sending to DLQ")
     void shouldHandleErrorWhenSendingToDlq() throws Throwable {
         args[0] = null;
         when(joinPoint.getArgs()).thenReturn(args);
@@ -163,7 +171,7 @@ class ValidateOrRejectAspectTest {
     }
 
     @Test
-    @DisplayName("Deve identificar corretamente argumentos de diferentes tipos")
+    @DisplayName("Should correctly identify arguments of different types")
     void shouldIdentifyArgumentsCorrectly() throws Throwable {
         Object customPayload = new Object();
         Object sessionMock = mock(jakarta.jms.Session.class);

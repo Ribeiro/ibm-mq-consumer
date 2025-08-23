@@ -5,6 +5,7 @@ import com.example.model.AuditEvent;
 import com.example.repository.AuditLogRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.jms.Message;              // <-- IMPORTANTE
 import jakarta.jms.Session;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -15,27 +16,23 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+
 import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.Map;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
-
 @ExtendWith(MockitoExtension.class)
 @DisplayName("MqAuditConsumerService Tests")
 class MqAuditConsumerServiceTest {
 
-    @Mock
-    private AuditLogRepository repository;
-
-    @Mock
-    private ObjectMapper objectMapper;
-
-    @Mock
-    private Session session;
+    @Mock private AuditLogRepository repository;
+    @Mock private ObjectMapper objectMapper;
+    @Mock private Session session;
 
     @InjectMocks
     private MqAuditConsumerService consumerService;
@@ -61,7 +58,7 @@ class MqAuditConsumerServiceTest {
     }
 
     @Test
-    @DisplayName("Deve processar mensagem com sucesso")
+    @DisplayName("Should process message successfully")
     void shouldProcessMessageSuccessfully() throws Exception {
         String expectedJson = "{\"messageId\":\"msg-123\",\"eventType\":\"USER_LOGIN\"}";
 
@@ -69,7 +66,7 @@ class MqAuditConsumerServiceTest {
         when(objectMapper.writeValueAsString(sampleEvent)).thenReturn(expectedJson);
         when(repository.saveAndFlush(any(AuditLog.class))).thenReturn(new AuditLog());
 
-        consumerService.onMessage(sampleEvent, headers, session);
+        consumerService.onMessage(sampleEvent, headers, mock(Message.class), session);
 
         ArgumentCaptor<AuditLog> logCaptor = ArgumentCaptor.forClass(AuditLog.class);
         verify(repository).saveAndFlush(logCaptor.capture());
@@ -82,18 +79,18 @@ class MqAuditConsumerServiceTest {
     }
 
     @Test
-    @DisplayName("Deve ignorar mensagem duplicada")
+    @DisplayName("Should ignore duplicate message")
     void shouldIgnoreDuplicateMessage() throws JsonProcessingException {
         when(repository.existsByMessageId("msg-123")).thenReturn(true);
 
-        consumerService.onMessage(sampleEvent, headers, session);
+        consumerService.onMessage(sampleEvent, headers, mock(Message.class), session);
 
         verify(repository, never()).saveAndFlush(any());
         verify(objectMapper, never()).writeValueAsString(any());
     }
 
     @Test
-    @DisplayName("Deve processar mensagem mesmo com messageId nulo")
+    @DisplayName("Should process message even with null messageId")
     void shouldProcessMessageWithNullMessageId() throws Exception {
         sampleEvent.setMessageId(null);
         String expectedJson = "{\"eventType\":\"USER_LOGIN\"}";
@@ -101,21 +98,20 @@ class MqAuditConsumerServiceTest {
         when(objectMapper.writeValueAsString(sampleEvent)).thenReturn(expectedJson);
         when(repository.saveAndFlush(any(AuditLog.class))).thenReturn(new AuditLog());
 
-        consumerService.onMessage(sampleEvent, headers, session);
+        consumerService.onMessage(sampleEvent, headers, mock(Message.class), session);
 
         verify(repository, never()).existsByMessageId(anyString());
         verify(repository).saveAndFlush(any(AuditLog.class));
     }
 
     @Test
-    @DisplayName("Deve lidar com erro de serialização JSON")
+    @DisplayName("Should handle JSON serialization error")
     void shouldHandleJsonSerializationError() throws Exception {
         when(repository.existsByMessageId("msg-123")).thenReturn(false);
         when(objectMapper.writeValueAsString(sampleEvent))
-                .thenThrow(new JsonProcessingException("Erro de serialização") {
-                });
+                .thenThrow(new JsonProcessingException("Serialization error") {});
 
-        consumerService.onMessage(sampleEvent, headers, session);
+        consumerService.onMessage(sampleEvent, headers, mock(Message.class), session);
 
         ArgumentCaptor<AuditLog> logCaptor = ArgumentCaptor.forClass(AuditLog.class);
         verify(repository).saveAndFlush(logCaptor.capture());
@@ -125,44 +121,42 @@ class MqAuditConsumerServiceTest {
     }
 
     @Test
-    @DisplayName("Deve ignorar DataIntegrityViolationException")
+    @DisplayName("Should ignore DataIntegrityViolationException")
     void shouldIgnoreDataIntegrityViolationException() throws Exception {
         when(repository.existsByMessageId("msg-123")).thenReturn(false);
         when(objectMapper.writeValueAsString(sampleEvent)).thenReturn("{}");
         when(repository.saveAndFlush(any(AuditLog.class)))
-                .thenThrow(new DataIntegrityViolationException("Violação de unicidade"));
+                .thenThrow(new DataIntegrityViolationException("Unique constraint violation"));
 
-        assertThatCode(() -> consumerService.onMessage(sampleEvent, headers, session))
+        assertThatCode(() -> consumerService.onMessage(sampleEvent, headers, mock(Message.class), session))
                 .doesNotThrowAnyException();
     }
 
     @Test
-    @DisplayName("Deve relançar RuntimeException")
+    @DisplayName("Should rethrow RuntimeException")
     void shouldRethrowRuntimeException() throws Exception {
-        RuntimeException runtimeException = new RuntimeException("Erro de runtime");
+        RuntimeException runtimeException = new RuntimeException("Runtime error");
         when(repository.existsByMessageId("msg-123")).thenReturn(false);
         when(objectMapper.writeValueAsString(sampleEvent)).thenReturn("{}");
         when(repository.saveAndFlush(any(AuditLog.class))).thenThrow(runtimeException);
 
-        assertThatThrownBy(() -> consumerService.onMessage(sampleEvent, headers, session))
+        assertThatThrownBy(() -> consumerService.onMessage(sampleEvent, headers, mock(Message.class), session))
                 .isInstanceOf(RuntimeException.class)
-                .hasMessage("Erro de runtime");
+                .hasMessage("Runtime error");
     }
 
     @Test
-    @DisplayName("Não deve lançar exceção quando falhar serialização; usa fallback {}")
+    @DisplayName("Should not throw on serialization failure; uses {} fallback")
     void shouldFallbackOnSerializationError() throws Exception {
         when(repository.existsByMessageId(anyString())).thenReturn(false);
-        JsonProcessingException checked = new JsonProcessingException("boom") {
-        };
+        JsonProcessingException checked = new JsonProcessingException("boom") {};
         when(objectMapper.writeValueAsString(any())).thenThrow(checked);
 
-        assertThatCode(() -> consumerService.onMessage(sampleEvent, headers, session))
+        assertThatCode(() -> consumerService.onMessage(sampleEvent, headers, mock(Message.class), session))
                 .doesNotThrowAnyException();
 
         ArgumentCaptor<AuditLog> cap = ArgumentCaptor.forClass(AuditLog.class);
         verify(repository).saveAndFlush(cap.capture());
         assertThat(cap.getValue().getPayload()).isEqualTo("{}");
     }
-
 }

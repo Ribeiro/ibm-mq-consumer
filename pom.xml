@@ -115,31 +115,38 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
-            <!-- Já inclui JUnit 5, Mockito, AssertJ, Hamcrest, etc. -->
         </dependency>
         
-        <!-- TestContainers - OPCIONAL -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${testcontainers.version}</version>
             <scope>test</scope>
         </dependency>
+
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
         
-        <!-- REMOVIDO: mockito-inline não é necessário -->
-        <!-- spring-boot-starter-test já inclui Mockito Core -->
-        
-        <!-- Awaitility para testes assíncronos -->
         <dependency>
             <groupId>org.awaitility</groupId>
             <artifactId>awaitility</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+      
     </dependencies>
     
     <build>
         <plugins>
-            <!-- Spring Boot Maven Plugin -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
@@ -153,14 +160,12 @@
                 </configuration>
             </plugin>
             
-            <!-- Maven Compiler Plugin para Java 17 -->
             <plugin>
             <artifactId>maven-compiler-plugin</artifactId>
             <version>3.11.0</version>
             <configuration>
                 <source>${java.version}</source>
                 <target>${java.version}</target>
-                <!-- Se você DECLARAR annotationProcessorPaths, precisa listar TODOS os processors usados -->
                 <annotationProcessorPaths>
                 <path>
                     <groupId>org.projectlombok</groupId>
@@ -176,14 +181,12 @@
             </configuration>
             </plugin>
             
-            <!-- Maven Surefire Plugin para executar testes -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.2</version>
                 <configuration>
                     <argLine>--enable-preview</argLine>
-                    <!-- Configurações para testes mais robustos -->
                     <includes>
                         <include>**/*Test.java</include>
                         <include>**/*Tests.java</include>
@@ -193,7 +196,6 @@
                 </configuration>
             </plugin>
             
-            <!-- JaCoCo Plugin para cobertura de código -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
@@ -214,7 +216,6 @@
                 </executions>
             </plugin>
             
-            <!-- Maven Failsafe Plugin para testes de integração -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
@@ -234,9 +235,7 @@
         </plugins>
     </build>
     
-    <!-- Profiles para diferentes ambientes -->
     <profiles>
-        <!-- Profile para desenvolvimento local -->
         <profile>
             <id>dev</id>
             <activation>
@@ -247,7 +246,6 @@
             </properties>
         </profile>
         
-        <!-- Profile para testes -->
         <profile>
             <id>test</id>
             <properties>
@@ -255,7 +253,6 @@
             </properties>
         </profile>
         
-        <!-- Profile para usar JMS embarcado (sem IBM MQ) -->
         <profile>
             <id>embedded-jms</id>
             <dependencies>

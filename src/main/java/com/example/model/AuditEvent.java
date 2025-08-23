@@ -17,31 +17,31 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AuditEvent {
-    
+
     @JsonProperty("messageId")
     private String messageId;
-    
-    @NotBlank(message = "Event type não pode estar vazio")
+
+    @NotBlank(message = "Event type must not be blank")
     @JsonProperty("eventType")
     private String eventType;
-    
-    @NotNull(message = "Timestamp é obrigatório")
+
+    @NotNull(message = "Timestamp is required")
     @JsonProperty("timestamp")
     @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
     private OffsetDateTime timestamp;
-    
+
     @JsonProperty("userId")
     private String userId;
-    
+
     @JsonProperty("entityId")
     private String entityId;
-    
+
     @JsonProperty("entityType")
     private String entityType;
-    
+
     @JsonProperty("details")
     private Map<String, Object> details;
-    
+
     @JsonProperty("source")
     private String source;
 }
